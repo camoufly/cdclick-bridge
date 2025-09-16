@@ -3,10 +3,10 @@ import crypto from "crypto";
 import axios from "axios";
 
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET;
-const WAREHOUSE_TOKEN = process.env.WAREHOUSE_TOKEN; // your CDClick token
-const WAREHOUSE_BASE_URL = "https://wall.cdclick-europe.com/api"; // from docs
+const WAREHOUSE_TOKEN = process.env.WAREHOUSE_TOKEN; // CDClick bearer token
+const WAREHOUSE_BASE_URL = "https://wall.cdclick-europe.com/api"; // from their docs
 
-// map Shopify SKUs -> CDClick item_id or subSKU like "2123.1.2.1"
+// Map Shopify SKUs -> CDClick item_id or subSKU like "2123.1.2.1"
 const SKU_TO_ITEM_ID = JSON.parse(process.env.SKU_TO_ITEM_ID_JSON || "{}");
 
 function verifyHmac(raw, hmac) {
@@ -20,7 +20,7 @@ function verifyHmac(raw, hmac) {
 const street = a => [a?.address1, a?.address2].filter(Boolean).join(", ");
 const two = s => (s || "").toString().slice(0,2).toUpperCase();
 
-function toWarehouse(order) {
+function toCDClick(order) {
   const a = order.shipping_address || {};
   const cart = (order.line_items || []).map(li => {
     const sku = li.sku || li.variant_sku || "";
@@ -32,7 +32,7 @@ function toWarehouse(order) {
   return {
     custom_id: order.name || String(order.id),
     check_multiple_custom_id: true,
-    idle: false,
+    idle: false, // set true if you want them to queue it instead of producing immediately
     shipping: {
       first_name: a.first_name || "",
       last_name: a.last_name || "",
@@ -57,18 +57,23 @@ export default async function handler(req, res) {
     if (!verifyHmac(raw, req.headers["x-shopify-hmac-sha256"])) return res.status(401).send("bad hmac");
 
     const order = JSON.parse(raw.toString("utf8"));
-    const payload = toWarehouse(order);
+    const payload = toCDClick(order);
 
     const r = await axios.post(`${WAREHOUSE_BASE_URL}/orders`, payload, {
-      headers: { "Content-Type":"application/json", "Authorization": `Bearer ${WAREHOUSE_TOKEN}` },
-      validateStatus: () => true, timeout: 20000
+      headers: {
+        "Content-Type":"application/json",
+        "Authorization": `Bearer ${WAREHOUSE_TOKEN}`
+      },
+      validateStatus: () => true,
+      timeout: 20000
     });
 
-    // CDClick returns 201 + { success:true }
+    // CDClick success: HTTP 201 with { success:true }
     if (r.status === 201 && r.data?.success) return res.status(200).send("ok");
 
     console.error("CDClick error", r.status, r.data);
-    return res.status(200).send("received"); // keep 200 so Shopify doesn’t spam retries
+    // keep 200 so Shopify doesn't spam retries, but log for you to check
+    return res.status(200).send("received");
   } catch (e) {
     console.error("handler error", e?.response?.status, e?.response?.data || e.message);
     return res.status(200).send("received");
